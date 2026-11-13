@@ -1,0 +1,21 @@
+{
+    "name": "EliotByte.PixelRender.Legacy.Demo.Editor",
+    "rootNamespace": "EliotByte.PixelRender.Legacy.Demo.Editor",
+    "references": [
+        "EliotByte.PixelRender.Legacy",
+        "EliotByte.PixelRender.Legacy.Demo",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipelines.Core.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

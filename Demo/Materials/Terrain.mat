@@ -1,0 +1,62 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: Terrain
+  m_Shader: {fileID: 4800000, guid: 465fdc2c351c20b4f966cf98f5e970a4, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _Layer0:
+        m_Texture: {fileID: 2800000, guid: eb11ddf8cee90b644a6c632810690a75, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _Layer1:
+        m_Texture: {fileID: 2800000, guid: f9b89a2bde354ba4aa6fe2507ce4955b, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _Layer2:
+        m_Texture: {fileID: 2800000, guid: 426e64cea60e1ea4080eb9c39c59002a, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _Layer3:
+        m_Texture: {fileID: 2800000, guid: a879ca320f5b6bf48a9cbe0dc8bc9e0a, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _AmbientStrength: 1
+    - _CellPixels: 7
+    - _LayerMaxStep: 16
+    - _LayerNoise: 1
+    - _LayerSharpness: 4
+    - _LayerSkip: 2
+    - _LayerTiling: 8
+    - _Layers: 1
+    - _Lit: 0
+    - _QuantizeToCenter: 1
+    - _ShadowStrength: 0
+    - _StepEdges: 1
+    - _Wrap: 0.25
+    m_Colors:
+    - _Checks: {r: 8, g: 8, b: 0, a: 0}
+    - _ColorA: {r: 0.95, g: 0.95, b: 0.95, a: 1}
+    - _ColorB: {r: 0.079999976, g: 0.079999976, b: 0.079999976, a: 1}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

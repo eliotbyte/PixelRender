@@ -1,0 +1,197 @@
+// Клетки на рёбрах полигонов. Ребро треугольника проецируется в сетку запекания его тайла, и по клеткам вдоль
+// проекции идём как растеризация линии (DDA). Клетка, которую ребро режет, достаётся треугольнику, в котором лежит
+// её центр (луч камеры запекания через центр клетки на плоскости треугольника, внутри треугольника) — поэтому каждую
+// разрезанную клетку выдаёт ровно один треугольник. Результат — квады на этих клетках (PixelRenderEdges.shader).
+// Зависит только от запечённых сеток: считается при перепекании.
+
+#pragma kernel FindEdgeCells
+
+struct Triangle
+{
+	float3 p0, p1, p2;
+	float2 uv0, uv1, uv2;
+	float4 w0, w1, w2;
+	float tile;
+	float objectIndex;   // номер объекта (рендерера): у каждого свой материал квадов
+};
+
+struct EdgeCell
+{
+	float3 center;
+	float3 normal;
+	float2 cell;
+	float2 uv;
+	float4 weights;
+	float tile;
+	float triangleIndex;
+	float2 uvU;   // шаг UV поперёк клетки (вдоль осей сетки) — для пропуска текселей / шахматки
+	float2 uvV;
+	float objectIndex;
+	float3 padding;
+};
+
+StructuredBuffer<Triangle> _Triangles;
+AppendStructuredBuffer<EdgeCell> _EdgeCells;
+StructuredBuffer<float4x4> _PixelRenderTileBake;
+StructuredBuffer<float4x4> _PixelRenderTileBakeInverse;
+float4 _PixelRenderSourceSize;
+float _PixelRenderSurfaceCell;
+uint _TriangleCount;
+uint _MaxSteps;
+
+float3 BakeClip(int tile, float3 p)
+{
+	float4 clip = mul(_PixelRenderTileBake[tile], float4(p, 1.0));
+	return clip.xyw;
+}
+
+bool RayOnPlane(int tile, float2 screen, float3 planePoint, float3 normal, out float3 hit)
+{
+	float2 ndc = screen * _PixelRenderSourceSize.zw * 2.0 - 1.0;
+	float4 nearPoint = mul(_PixelRenderTileBakeInverse[tile], float4(ndc, -1.0, 1.0));
+	float4 midPoint = mul(_PixelRenderTileBakeInverse[tile], float4(ndc, 0.0, 1.0));
+	float3 origin = nearPoint.xyz / nearPoint.w;
+	float3 direction = midPoint.xyz / midPoint.w - origin;
+	float facing = dot(direction, normal);
+	hit = planePoint;
+
+	if (abs(facing) < 1e-7 * length(direction))
+		return false;
+
+	float t = dot(planePoint - origin, normal) / facing;
+	hit = origin + direction * t;
+	return t > 0.0;
+}
+
+bool Barycentric(Triangle tri, float3 p, out float3 b)
+{
+	float3 e0 = tri.p1 - tri.p0, e1 = tri.p2 - tri.p0, e2 = p - tri.p0;
+	float d00 = dot(e0, e0), d01 = dot(e0, e1), d11 = dot(e1, e1), d20 = dot(e2, e0), d21 = dot(e2, e1);
+	float denom = d00 * d11 - d01 * d01;
+	b = float3(1, 0, 0);
+
+	if (abs(denom) < 1e-12)
+		return false;
+
+	float v = (d11 * d20 - d01 * d21) / denom;
+	float w = (d00 * d21 - d01 * d20) / denom;
+	b = float3(1.0 - v - w, v, w);
+	const float eps = -1e-5;
+	return all(b >= eps);
+}
+
+float2 UvAt(Triangle tri, float3 p)
+{
+	float3 b;
+	Barycentric(tri, p, b);   // вне треугольника — линейное продолжение
+	return tri.uv0 * b.x + tri.uv1 * b.y + tri.uv2 * b.z;
+}
+
+void Visit(Triangle tri, uint triangleIndex, int tile, float3 normal, int2 cell)
+{
+	float cellPixels = max(_PixelRenderSurfaceCell, 1.0);
+	float3 center;
+
+	if (!RayOnPlane(tile, (float2(cell) + 0.5) * cellPixels, tri.p0, normal, center))
+		return;
+
+	float3 b;
+
+	if (!Barycentric(tri, center, b))
+		return;   // центр клетки не на этом треугольнике — клетку выдаст сосед
+
+	EdgeCell result;
+	result.center = center;
+	result.normal = normal;
+	result.cell = float2(cell);
+	result.uv = tri.uv0 * b.x + tri.uv1 * b.y + tri.uv2 * b.z;
+	result.weights = tri.w0 * b.x + tri.w1 * b.y + tri.w2 * b.z;
+	result.tile = tri.tile;
+	result.triangleIndex = triangleIndex;
+	result.objectIndex = tri.objectIndex;
+	result.padding = 0.0;
+	float2 centerScreen = (float2(cell) + 0.5) * cellPixels;
+	float3 plusU, minusU, plusV, minusV;
+	RayOnPlane(tile, centerScreen + float2(0.5 * cellPixels, 0.0), tri.p0, normal, plusU);
+	RayOnPlane(tile, centerScreen - float2(0.5 * cellPixels, 0.0), tri.p0, normal, minusU);
+	RayOnPlane(tile, centerScreen + float2(0.0, 0.5 * cellPixels), tri.p0, normal, plusV);
+	RayOnPlane(tile, centerScreen - float2(0.0, 0.5 * cellPixels), tri.p0, normal, minusV);
+	result.uvU = UvAt(tri, plusU) - UvAt(tri, minusU);
+	result.uvV = UvAt(tri, plusV) - UvAt(tri, minusV);
+	_EdgeCells.Append(result);
+}
+
+[numthreads(64, 1, 1)]
+void FindEdgeCells(uint3 id : SV_DispatchThreadID)
+{
+	uint triangleIndex = id.x / 3;
+
+	if (triangleIndex >= _TriangleCount)
+		return;
+
+	Triangle tri = _Triangles[triangleIndex];
+	int tile = int(tri.tile);
+	uint edge = id.x % 3;
+	float3 a = edge == 0 ? tri.p0 : edge == 1 ? tri.p1 : tri.p2;
+	float3 b = edge == 0 ? tri.p1 : edge == 1 ? tri.p2 : tri.p0;
+	float3 normal = normalize(cross(tri.p1 - tri.p0, tri.p2 - tri.p0));
+
+	// В клип запекания; отрезок обрезаем по ближней плоскости (w > 0).
+	float3 ca = BakeClip(tile, a), cb = BakeClip(tile, b);
+	const float nearW = 1e-3;
+
+	if (ca.z < nearW && cb.z < nearW)
+		return;
+
+	if (ca.z < nearW) ca = lerp(ca, cb, (nearW - ca.z) / (cb.z - ca.z));
+	if (cb.z < nearW) cb = lerp(cb, ca, (nearW - cb.z) / (ca.z - cb.z));
+
+	float cellPixels = max(_PixelRenderSurfaceCell, 1.0);
+	float2 sa = (ca.xy / ca.z * 0.5 + 0.5) * _PixelRenderSourceSize.xy / cellPixels;
+	float2 sb = (cb.xy / cb.z * 0.5 + 0.5) * _PixelRenderSourceSize.xy / cellPixels;
+
+	// Обрезка по экрану с запасом в четверть экрана (в клетках) — дальше клетки не нужны.
+	float2 lo = -0.25 * _PixelRenderSourceSize.xy / cellPixels, hi = 1.25 * _PixelRenderSourceSize.xy / cellPixels;
+	float2 d = sb - sa;
+	float t0 = 0.0, t1 = 1.0;
+
+	[unroll]
+	for (int axis = 0; axis < 2; axis++)
+	{
+		if (abs(d[axis]) < 1e-9)
+		{
+			if (sa[axis] < lo[axis] || sa[axis] > hi[axis]) return;
+			continue;
+		}
+
+		float ta = (lo[axis] - sa[axis]) / d[axis], tb = (hi[axis] - sa[axis]) / d[axis];
+		t0 = max(t0, min(ta, tb));
+		t1 = min(t1, max(ta, tb));
+	}
+
+	if (t0 > t1)
+		return;
+
+	float2 p = sa + d * t0, q = sa + d * t1;
+
+	// DDA по клеткам (Amanatides–Woo).
+	int2 cell = int2(floor(p));
+	int2 last = int2(floor(q));
+	float2 dir = q - p;
+	int2 stepDir = int2(dir.x > 0 ? 1 : -1, dir.y > 0 ? 1 : -1);
+	float2 tDelta = float2(abs(dir.x) > 1e-9 ? 1.0 / abs(dir.x) : 1e30, abs(dir.y) > 1e-9 ? 1.0 / abs(dir.y) : 1e30);
+	float2 tMax = float2(
+		abs(dir.x) > 1e-9 ? (dir.x > 0 ? (cell.x + 1 - p.x) : (p.x - cell.x)) * tDelta.x : 1e30,
+		abs(dir.y) > 1e-9 ? (dir.y > 0 ? (cell.y + 1 - p.y) : (p.y - cell.y)) * tDelta.y : 1e30);
+
+	for (uint i = 0; i < _MaxSteps; i++)
+	{
+		Visit(tri, triangleIndex, tile, normal, cell);
+
+		if (all(cell == last))
+			break;
+
+		if (tMax.x < tMax.y) { tMax.x += tDelta.x; cell.x += stepDir.x; }
+		else { tMax.y += tDelta.y; cell.y += stepDir.y; }
+	}
+}

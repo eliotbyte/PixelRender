@@ -1,0 +1,18 @@
+{
+    "name": "EliotByte.PixelRender.Legacy.Demo",
+    "rootNamespace": "EliotByte.PixelRender.Legacy.Demo",
+    "references": [
+        "EliotByte.PixelRender.Legacy",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipelines.Core.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
