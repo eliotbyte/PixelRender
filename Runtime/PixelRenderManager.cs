@@ -51,6 +51,14 @@ namespace EliotByte.PixelRender
 		[Tooltip("Допуск глубины (доля) при проверке «центр клетки не за силуэтом».")]
 		[Range(0.005f, 0.2f)] public float DepthTolerance = 0.03f;
 
+		[Header("Plain Render (toggle)")]
+		[Tooltip("Клавиша в Play: переключить на обычный рендер в уменьшенном разрешении " +
+		         "(1 пиксель = Cell Pixels пикселей экрана, без пиксельной сборки) и обратно. None — выключено.")]
+		public KeyCode PlainRenderKey = KeyCode.F8;
+
+		/// <summary>Обычный рендер в уменьшенном разрешении вместо пиксельного (только в Play).</summary>
+		[System.NonSerialized] public bool PlainRender;
+
 		[Header("References")]
 		[SerializeField] private Shader resolveShader;
 		[SerializeField] private ComputeShader edgeCompute;
@@ -113,6 +121,12 @@ namespace EliotByte.PixelRender
 		private readonly List<Material> _edgesMaterials = new();
 		private readonly List<GameObject> _edgesObjects = new();
 		private Mesh _edgesMesh;
+
+		// Тени для квадов на рёбрах: квады рисует игровая камера, а она не видит слой Layer — в её карте теней нет
+		// пиксельных объектов, и клетки на рёбрах в тени выходили светлее источника (полосы по стыкам полигонов).
+		// Поэтому у каждого неподвижного объекта слоя — скрытый двойник «только тень» на слое ShadowProxyLayer.
+		public const int ShadowProxyLayer = 0;
+		private readonly List<MeshRenderer> _shadowProxies = new();
 		/// <summary>Сколько клеток на рёбрах нашлось в последний раз (для тестов; читается с видеокарты по запросу).</summary>
 		public int ReadEdgeCellCount()
 		{
@@ -136,6 +150,7 @@ namespace EliotByte.PixelRender
 		private static readonly int TileBakeId = Shader.PropertyToID("_PixelRenderTileBake");
 		private static readonly int TileBakeInverseId = Shader.PropertyToID("_PixelRenderTileBakeInverse");
 		private static readonly int EdgeObjectId = Shader.PropertyToID("_EdgeObject");
+		private static readonly int NoEdgesId = Shader.PropertyToID("_PixelRenderNoEdges");
 		private static readonly int EdgeCellsId = Shader.PropertyToID("_PixelRenderEdgeCells");
 		private static readonly int EdgeCountId = Shader.PropertyToID("_PixelRenderEdgeCount");
 		private static readonly int EdgeParamsId = Shader.PropertyToID("_PixelRenderEdgeParams");
@@ -160,6 +175,7 @@ namespace EliotByte.PixelRender
 
 		private void OnDisable()
 		{
+			if (_plainActive) ExitPlain();
 			RenderPipelineManager.beginCameraRendering -= OnBeginCamera;
 			RenderPipelineManager.endCameraRendering -= OnEndCamera;
 			Release();
@@ -282,6 +298,14 @@ namespace EliotByte.PixelRender
 				}
 
 			_edgesMaterials.Clear();
+
+			foreach (var proxy in _shadowProxies)
+				if (proxy != null)
+				{
+					if (Application.isPlaying) Destroy(proxy.gameObject); else DestroyImmediate(proxy.gameObject);
+				}
+
+			_shadowProxies.Clear();
 			_tiles = Array.Empty<Tile>();
 			_terrainKey = 0;
 
@@ -304,7 +328,108 @@ namespace EliotByte.PixelRender
 
 		private void LateUpdate()
 		{
+#if ENABLE_LEGACY_INPUT_MANAGER
+			if (Application.isPlaying && PlainRenderKey != KeyCode.None && Input.GetKeyDown(PlainRenderKey))
+				PlainRender = !PlainRender;
+#endif
 			Step();
+		}
+
+		// ------------------------------------------------------------------ обычный рендер в низком разрешении
+
+		private bool _plainActive;
+		private RenderTexture _plainRT;
+		private Camera _present;
+
+		/// <summary>Включить обычный рендер: пиксельный конвейер выгружается, игровая камера видит слой Layer
+		/// (шейдеры слоя вне прохода источника рисуют обычный цвет) и рендерит в текстуру экран / Cell Pixels,
+		/// которая растягивается на экран без фильтрации.</summary>
+		private void EnterPlain()
+		{
+			Release();
+			if (_camera == null) _camera = GetComponent<Camera>();
+
+			if (_present == null)
+			{
+				// Пустая камера на экран: очищает его, пока игровая камера рендерит в текстуру.
+				var presentObj = new GameObject("Pixel Render Plain Present Camera") { hideFlags = HideFlags.HideAndDontSave };
+				_present = presentObj.AddComponent<Camera>();
+				_present.cullingMask = 0;
+				_present.clearFlags = CameraClearFlags.SolidColor;
+				_present.backgroundColor = Color.black;
+				_present.allowMSAA = false;
+				_present.allowHDR = false;
+				_present.useOcclusionCulling = false;
+				var data = _present.GetUniversalAdditionalCameraData();
+				data.renderPostProcessing = false;
+				data.renderShadows = false;
+				data.antialiasing = AntialiasingMode.None;
+			}
+
+			_plainActive = true;
+		}
+
+		private void ExitPlain()
+		{
+			_plainActive = false;
+			if (_camera != null)
+			{
+				_camera.targetTexture = null;
+				_camera.cullingMask &= ~(1 << Layer);
+			}
+
+			ReleaseRT(ref _plainRT);
+
+			if (_present != null)
+			{
+				if (Application.isPlaying) Destroy(_present.gameObject); else DestroyImmediate(_present.gameObject);
+				_present = null;
+			}
+		}
+
+		private void StepPlain()
+		{
+			if (!_plainActive) EnterPlain();
+			if (_camera == null) return;
+
+			_camera.cullingMask |= 1 << Layer;
+			_present.depth = _camera.depth + 1f;
+
+			float cell = CellSize(Screen.height);
+			int width = Mathf.Max(1, Mathf.CeilToInt(Screen.width / cell));
+			int height = Mathf.Max(1, Mathf.CeilToInt(Screen.height / cell));
+
+			if (_plainRT == null || _plainRT.width != width || _plainRT.height != height)
+			{
+				_camera.targetTexture = null;
+				ReleaseRT(ref _plainRT);
+				_plainRT = new RenderTexture(width, height, 24, RenderTextureFormat.Default, RenderTextureReadWrite.Default)
+				{
+					name = "Pixel Render Plain Low Res",
+					filterMode = FilterMode.Point,
+					wrapMode = TextureWrapMode.Clamp,
+					hideFlags = HideFlags.HideAndDontSave
+				};
+				_plainRT.Create();
+			}
+
+			_camera.targetTexture = _plainRT;
+		}
+
+		/// <summary>Размер клетки на экране в пикселях: Cell Pixels задан для высоты 720 и масштабируется под экран.
+		/// Один расчёт для пиксельного и обычного рендера — размер пикселя при переключении не меняется.</summary>
+		public float CellSize(int screenHeight) => Mathf.Max(1f, Mathf.Round(CellPixels * (screenHeight / 720f)));
+
+		private void OnGUI()
+		{
+			if (!_plainActive || _plainRT == null || Event.current.type != EventType.Repaint) return;
+
+			// Каждый пиксель текстуры — ровно Cell Pixels пикселей экрана; лишнее по краям обрезается поровну.
+			float cell = CellSize(Screen.height);
+			float drawWidth = _plainRT.width * cell, drawHeight = _plainRT.height * cell;
+			var rect = new Rect(Mathf.Floor((Screen.width - drawWidth) * 0.5f), Mathf.Floor((Screen.height - drawHeight) * 0.5f),
+				drawWidth, drawHeight);
+			GUI.DrawTexture(rect, _plainRT, ScaleMode.StretchToFill, false);
 		}
 
 		private static readonly Unity.Profiling.ProfilerMarker StepMarker = new("PixelRender.Step");
@@ -312,6 +437,14 @@ namespace EliotByte.PixelRender
 		public void Step()
 		{
 			using var marker = StepMarker.Auto();
+
+			if (PlainRender && Application.isPlaying)
+			{
+				StepPlain();
+				return;
+			}
+
+			if (_plainActive) ExitPlain();
 			Initialize();
 			if (_camera == null || _source == null) return;
 
@@ -350,6 +483,7 @@ namespace EliotByte.PixelRender
 			Shader.SetGlobalVector(SourceSizeId, new Vector4(width, height, 1f / width, 1f / height));
 
 			UpdateSurfaceBake(screenMatrix, width, height);
+			UpdateShadowProxies();
 
 			// Позиционируем квад сборки перед камерой
 			float distance = _camera.nearClipPlane * 2f;
@@ -383,8 +517,11 @@ namespace EliotByte.PixelRender
 				_nextTerrainSearch = Time.realtimeSinceStartupAsDouble + 2.0;
 				_terrainFilters.Clear();
 
-				foreach (var filter in FindObjectsByType<MeshFilter>(FindObjectsSortMode.None))
-					if (filter.gameObject.layer == Layer && filter.sharedMesh != null && filter.TryGetComponent(out MeshRenderer renderer) && renderer.enabled
+				// FindObjectsByType не видит объекты с HideFlags.DontSaveInEditor (геометрия, которую генераторы
+				// пересобирают и не сохраняют в сцену), поэтому — все MeshFilter загруженных сцен.
+				foreach (var filter in Resources.FindObjectsOfTypeAll<MeshFilter>())
+					if (filter.gameObject.layer == Layer && filter.gameObject.scene.IsValid() && filter.gameObject.activeInHierarchy
+					    && filter.sharedMesh != null && filter.TryGetComponent(out MeshRenderer renderer) && renderer.enabled
 					    && filter.GetComponentInParent<Rigidbody>() == null)
 						_terrainFilters.Add(filter);
 				// Движущиеся объекты (с Rigidbody) в тайлы и квады на рёбрах не входят: треугольники тайлов собираются
@@ -399,6 +536,9 @@ namespace EliotByte.PixelRender
 			foreach (var filter in _terrainFilters)
 			{
 				var mesh = filter.sharedMesh;
+				// Сам объект тоже: генераторы пересоздают объекты с теми же мешами — без него ключ не менялся, а порядок
+				// объектов (= номера материалов квадов на рёбрах) менялся, и сборка брала цвет не тех клеток.
+				key = key * 31 + filter.GetHashCode();
 				key = key * 31 + mesh.GetHashCode();
 				key = key * 31 + mesh.vertexCount;
 				key = key * 31 + mesh.bounds.GetHashCode();
@@ -598,7 +738,7 @@ namespace EliotByte.PixelRender
 			RefreshTerrain();
 			// Целое число пикселей: при дробной клетке границы клеток проходят через центры пикселей, и квад на ребре и
 			// сборка по-разному решают, чей это пиксель (линия в 1 px цвета соседней клетки, пунктир по границам).
-			float cell = Mathf.Max(1f, Mathf.Round(CellPixels * (height / 720f)));
+			float cell = CellSize(height);
 			bool all = DebugForceBake || !_surfaceBaked || !Mathf.Approximately(cell, _surfaceCell);
 			float worst = 0f;
 
@@ -694,10 +834,45 @@ namespace EliotByte.PixelRender
 			{
 				var objectMaterial = _terrainFilters[i].GetComponent<MeshRenderer>().sharedMaterial;
 
+				// Материал с вырезом по альфе (перила, проёмы) помечен _PixelRenderNoEdges: квады не знают выреза и
+				// закрасили бы прозрачные клетки на рёбрах. Такой объект остаётся в тайлах и тенях, без квадов.
+				_edgesObjects[i].SetActive(objectMaterial == null || !objectMaterial.HasProperty(NoEdgesId) || objectMaterial.GetFloat(NoEdgesId) < 0.5f);
+
 				if (objectMaterial != null)
 					_edgesMaterials[i].CopyPropertiesFromMaterial(objectMaterial);
 
 				_edgesMaterials[i].SetFloat(EdgeObjectId, i);
+			}
+		}
+
+		private void UpdateShadowProxies()
+		{
+			while (_shadowProxies.Count < _terrainFilters.Count)
+			{
+				var proxyObject = new GameObject("Pixel Render Shadow Proxy " + _shadowProxies.Count) { hideFlags = HideFlags.HideAndDontSave, layer = ShadowProxyLayer };
+				proxyObject.AddComponent<MeshFilter>();
+				var proxyRenderer = proxyObject.AddComponent<MeshRenderer>();
+				proxyRenderer.shadowCastingMode = ShadowCastingMode.ShadowsOnly;
+				proxyRenderer.receiveShadows = false;
+				_shadowProxies.Add(proxyRenderer);
+			}
+
+			for (int i = 0; i < _shadowProxies.Count; i++)
+			{
+				var proxy = _shadowProxies[i];
+				var filter = i < _terrainFilters.Count ? _terrainFilters[i] : null;
+				var source = filter != null ? filter.GetComponent<MeshRenderer>() : null;
+				bool active = source != null && source.shadowCastingMode != ShadowCastingMode.Off;
+				proxy.enabled = active;
+
+				if (!active)
+					continue;
+
+				proxy.GetComponent<MeshFilter>().sharedMesh = filter.sharedMesh;
+				proxy.sharedMaterials = source.sharedMaterials;
+				var t = filter.transform;
+				proxy.transform.SetPositionAndRotation(t.position, t.rotation);
+				proxy.transform.localScale = t.lossyScale;
 			}
 		}
 

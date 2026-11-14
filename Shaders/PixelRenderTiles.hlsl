@@ -12,6 +12,24 @@ float4 _PixelRenderTileCount;    // xy — тайлов по X и Z
 float4 _PixelRenderSourceSize;   // xy — размер источника в пикселях, zw — 1/размер
 float _PixelRenderSurfaceCell;   // размер клетки в пикселях
 
+// Канал номера тайла в источнике (half) несёт ещё «уровень наложения» 0..3 (_PixelRenderOverlay материала): знак — бит 0,
+// +1024 — бит 1. Поверхность уровня L лежит поверх поверхностей ниже (окно на стене, дорога над террейном, подъезд над
+// скатом дороги): квад на ребре не рисуется, если в центре его клетки виден уровень выше его собственного.
+// Ограничение: тайлов < 1023 (half точно хранит целые до 2048).
+float EncodeTileLevel(int tile, float level)
+{
+	int l = clamp(int(round(level)), 0, 3);
+	float m = tile + 1.0 + ((l & 2) != 0 ? 1024.0 : 0.0);
+	return (l & 1) != 0 ? -m : m;
+}
+
+void DecodeTileLevel(float v, out int tile, out int level)
+{
+	float m = abs(v);
+	level = (v < 0.0 ? 1 : 0) + (m > 1024.5 ? 2 : 0);
+	tile = max(int(round(m > 1024.5 ? m - 1024.0 : m)) - 1, 0);
+}
+
 int TileIndexOf(float3 world)
 {
 	int2 tile = clamp(int2(floor((world.xz - _PixelRenderTileGrid.xy) * _PixelRenderTileGrid.w)), int2(0, 0), int2(_PixelRenderTileCount.xy) - 1);

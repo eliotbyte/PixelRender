@@ -22,6 +22,7 @@ Shader "EliotByte/PixelRender/Edges"
 		_AmbientStrength ("Ambient Strength", Range(0, 2)) = 1.0
 		_ShadowStrength ("Shadow Strength", Range(0, 1)) = 0.65
 		_Wrap ("Light Wrap", Range(0, 1)) = 0.25
+		_PixelRenderOverlay ("Overlay Level", Range(0, 3)) = 0
 	}
 
 	SubShader
@@ -73,6 +74,7 @@ Shader "EliotByte/PixelRender/Edges"
 				half4 _ColorB;
 				float4 _Checks;
 				float _EdgeObject;   // номер объекта, чьи квады рисует этот материал
+				float _PixelRenderOverlay;   // уровень наложения объекта (копируется из его материала)
 			CBUFFER_END
 
 			TEXTURE2D(_Layer0);
@@ -113,6 +115,7 @@ Shader "EliotByte/PixelRender/Edges"
 			};
 
 			half LayerLuminance(half3 c) { return dot(c, half3(0.299h, 0.587h, 0.114h)); }
+
 
 			half3 LayerAlbedo(float2 uv, float4 weights)
 			{
@@ -195,10 +198,18 @@ Shader "EliotByte/PixelRender/Edges"
 
 				if (all(centerPixel >= 0) && all(centerPixel < int2(_PixelRenderSourceSize.xy)))
 				{
-					float sourceDepth = LOAD_TEXTURE2D(_PixelRenderSource, centerPixel).a;
+					float4 centerSource = LOAD_TEXTURE2D(_PixelRenderSource, centerPixel);
+					float sourceDepth = centerSource.a;
 
 					// В точке центра видна именно эта поверхность (не ближе — закрыта, не дальше — центр за краем).
 					if (sourceDepth <= 0.0 || abs(sourceDepth - centerDepth) > centerDepth * 0.01 + 0.03)
+						return o;
+
+					// …и там не поверхность уровня наложения выше своего (окно на стене, дорога над террейном, подъезд над
+					// скатом; см. EncodeTileLevel): по глубине их не отличить, квад нижней поверхности рисовался поверх.
+					int centerTile, centerLevel;
+					DecodeTileLevel(f16tof32(asuint(centerSource.g) & 0xFFFFu), centerTile, centerLevel);
+					if (centerLevel > int(round(_PixelRenderOverlay)))
 						return o;
 				}
 

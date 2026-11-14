@@ -144,7 +144,8 @@ Shader "EliotByte/PixelRender/Resolve"
 				UnpackHalf2(raw.g, b, id);
 				UnpackHalf2(raw.b, octX, octY);
 				s.color = float3(r, g, b);
-				s.tile = max(int(round(id)) - 1, 0);
+				int level;
+				DecodeTileLevel(id, s.tile, level); // уровень наложения нужен только квадам на рёбрах
 				s.normal = OctDecode(float2(octX, octY));
 				float3 ray = ScreenRay(float2(coord) + 0.5);
 				s.world = _PixelRenderCameraPosition.xyz + ray * (s.depth / max(dot(ray, _PixelRenderCameraForward.xyz), 1e-4));
